@@ -10,7 +10,12 @@ import colorsys
 
 DEBUG=True
 
-beat = 500
+def bpm_to_ms(bpm):
+    return int(60*1000/bpm)
+
+beat = bpm_to_ms(120)
+num_scenes = 8
+num_tracks = 12
 
 def lighten_rgb(col, mul):
     mul = float(mul)
@@ -25,11 +30,11 @@ class OSCServer(liblo.ServerThread):
 
         self.osc_routes = {
             "/play" : self.set_playing,
-            "/track/([0-9])/color" : self.set_track_color,
-            "/track/([0-9])/clip/([0-9])/isQueued" : self.set_clip_queued,
-            "/track/([0-9])/clip/([0-9])/isPlaying" : self.set_clip_playing,
-            "/track/([0-9])/clip/([0-9])/name" : self.set_clip_name,
-            "/track/([0-9])/clip/([0-9])/hasContent" : self.set_clip_has_content
+            "/track/([0-9]+)/color" : self.set_track_color,
+            "/track/([0-9]+)/clip/([0-9]+)/isQueued" : self.set_clip_queued,
+            "/track/([0-9]+)/clip/([0-9]+)/isPlaying" : self.set_clip_playing,
+            "/track/([0-9]+)/clip/([0-9]+)/name" : self.set_clip_name,
+            "/track/([0-9]+)/clip/([0-9]+)/hasContent" : self.set_clip_has_content
         }
 
     def parse_rgb(self, rgbstr):
@@ -54,7 +59,7 @@ class OSCServer(liblo.ServerThread):
     
     def set_track_color(self, track, args):
         track = int(track)
-        for clip in range(1,8+1):
+        for clip in range(1,num_scenes+1):
             color = self.parse_rgb(args[0])
             self.app.gui.leds[track][clip].color = color
             self.app.gui.leds[track][clip].queue_draw()
@@ -115,12 +120,12 @@ class App(object):
                 ev.send()
 
 class OSCButton(Gtk.Widget):
-    __gtype_name__ = 'OSCButton'
+
     def __init__(self, osc_target, msg):
         Gtk.Widget.__init__(self)
         self.osc = osc_target
         self.msg = msg
-        self.connect("touch-event", self.touched)
+        #self.connect("touch-event", self.touched)
         self.connect("button-press-event", self.clicked)
         self.color = (0.95, 0.95, 0.95)
         self.set_size_request(80, 60)
@@ -164,8 +169,16 @@ class OSCButton(Gtk.Widget):
         self.set_realized(True)
         window.set_background_pattern(None)
 
+    def play_icon(self, cr):
+        allocation = self.get_allocation()
+        cr.move_to(allocation.width-16, 6)
+        cr.line_to(allocation.width-6, 11)
+        cr.line_to(allocation.width-16, 16)
+        cr.close_path()
+        cr.set_source_rgb(0.7, 0.7, 0.7)
+        cr.fill()
+
 class ClipButton(OSCButton):
-    __gtype_name__ = 'ClipButton'
 
     def __init__(self, track, clip, osc_target, msg):
         OSCButton.__init__(self, osc_target, msg)
@@ -218,7 +231,61 @@ class ClipButton(OSCButton):
         cr.show_text(self.label_index)
         cr.move_to(4,30)
         cr.show_text(self.label_content)
-        #self.add(Gtk.Label(self.label_index))
+
+        self.play_icon(cr)
+
+
+class StopButton(OSCButton):
+
+    def __init__(self, osc_target, msg):
+        OSCButton.__init__(self, osc_target, msg)
+
+    def do_draw(self, cr):
+        allocation = self.get_allocation()
+        cr.set_source_rgb(0.95, 0.95, 0.95)
+        cr.rectangle(0, 0, allocation.width, allocation.height)
+        cr.fill()
+        cr.set_source_rgb(0.9, 0.9, 0.9)
+        cr.rectangle(0, 0, allocation.width, allocation.height)
+        cr.stroke()
+
+        cr.set_source_rgb(0.6, 0.6, 0.6)
+        cr.select_font_face("Monaco", cairo.FONT_SLANT_NORMAL, 
+            cairo.FONT_WEIGHT_NORMAL)
+        cr.set_font_size(11)
+        cr.move_to(4,15)
+        cr.text_path("Stop")
+        cr.fill()
+
+        # stop icon
+        cr.rectangle(allocation.width-16, 6, 10, 10)
+        cr.set_source_rgb(0.7, 0.7, 0.7)
+        cr.fill()
+
+class SceneButton(OSCButton):
+
+    def __init__(self, scene, osc_target, msg):
+        OSCButton.__init__(self, osc_target, msg)
+        self.scene = scene
+
+    def do_draw(self, cr):
+        allocation = self.get_allocation()
+        cr.set_source_rgb(0.95, 0.95, 0.95)
+        cr.rectangle(0, 0, allocation.width, allocation.height)
+        cr.fill()
+        cr.set_source_rgb(0.9, 0.9, 0.9)
+        cr.rectangle(0, 0, allocation.width, allocation.height)
+        cr.stroke()
+
+        cr.set_source_rgb(0.6, 0.6, 0.6)
+        cr.select_font_face("Monaco", cairo.FONT_SLANT_NORMAL, 
+            cairo.FONT_WEIGHT_NORMAL)
+        cr.set_font_size(11)
+        cr.move_to(4,15)
+        cr.text_path("Scene %i" % self.scene)
+        cr.fill()
+
+        self.play_icon(cr)
 
 class Gui(Gtk.Window):
     def __init__(self, app):
@@ -227,13 +294,15 @@ class Gui(Gtk.Window):
 
         #gobject.threads_init()
 
-        self.table = Gtk.Table(9, 10, True)
+        self.table = Gtk.Table(num_scenes+2, num_tracks+1, True)
         self.add(self.table)
-        self.leds = [[False for x in range(8+1)] for x in range(8+1)] 
+        self.leds = [[False for x in range(num_scenes+1)] for x in range(num_tracks+1)] 
+        self.headers = [False for x in range(num_tracks+1)] 
 
-        for header in range(1, 8+1):
+        for header in range(1, num_tracks+1):
+            self.headers[header] = Gtk.Label('Track %i' % header)
             self.table.attach(
-                Gtk.Label('Track %i' % header),
+                self.headers[header],
                 header,header+1,
                 0,1,
                 Gtk.AttachOptions.EXPAND | Gtk.AttachOptions.FILL,
@@ -242,13 +311,13 @@ class Gui(Gtk.Window):
                 2
             )
 
-        for track in range(1,8+1):
-            for clip in range(1,8+1):
+        for track in range(1,num_tracks+1):
+            for clip in range(1,num_scenes+1):
                 self.leds[track][clip] = ClipButton(
                     track,
                     clip,
                     self.app.osc_target,
-                    liblo.Message("/track/%i/clip/%i/launch" % (track, clip)),
+                    liblo.Message("/track/%i/clip/%i/launch" % (track, clip))
                 )
                 self.table.attach(
                     self.leds[track][clip],
@@ -259,6 +328,48 @@ class Gui(Gtk.Window):
                     2,
                     2
                 )
+
+        for track in range(1, num_tracks+1):
+            self.table.attach(
+                StopButton(
+                    self.app.osc_target,
+                    liblo.Message("/track/%i/clip/stop" % (track,))
+                ),
+                track,track+1,
+                num_scenes+1,num_scenes+2,
+                Gtk.AttachOptions.EXPAND | Gtk.AttachOptions.FILL,
+                Gtk.AttachOptions.EXPAND | Gtk.AttachOptions.FILL,
+                2,
+                2
+            )
+
+        for scene in range(1, num_scenes+1):
+            self.table.attach(
+                SceneButton(
+                    scene,
+                    self.app.osc_target,
+                    liblo.Message("/scene/%i/launch" % (scene,))
+                ),
+                0,1,
+                scene,scene+1,
+                Gtk.AttachOptions.EXPAND | Gtk.AttachOptions.FILL,
+                Gtk.AttachOptions.EXPAND | Gtk.AttachOptions.FILL,
+                2,
+                2
+            )
+
+        self.table.attach(
+            StopButton(
+                self.app.osc_target,
+                liblo.Message("/stop")
+            ),
+            0,1,
+            num_scenes+1,num_scenes+2,
+            Gtk.AttachOptions.EXPAND | Gtk.AttachOptions.FILL,
+            Gtk.AttachOptions.EXPAND | Gtk.AttachOptions.FILL,
+            2,
+            2
+        )
 
         self.show_all()
 
