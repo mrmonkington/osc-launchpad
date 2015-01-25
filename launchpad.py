@@ -2,32 +2,86 @@
 import sys, threading
 import liblo
 from gi.repository import Gtk
+from gi.repository import GObject
 from gi.repository import Gdk
+import cairo
 import re
+import colorsys
 
 DEBUG=True
+
+beat = 500
+
+def lighten_rgb(col, mul):
+    mul = float(mul)
+    hls = list(colorsys.rgb_to_hls(*col))
+    hls[1] = hls[1] + ((1.0 - hls[1]) / mul) * (mul-1)
+    return colorsys.hls_to_rgb(*hls)
 
 class OSCServer(liblo.ServerThread):
     def __init__(self, app):
         liblo.ServerThread.__init__(self, 9000)
         self.app = app
 
+        self.osc_routes = {
+            "/play" : self.set_playing,
+            "/track/([0-9])/color" : self.set_track_color,
+            "/track/([0-9])/clip/([0-9])/isQueued" : self.set_clip_queued,
+            "/track/([0-9])/clip/([0-9])/isPlaying" : self.set_clip_playing,
+            "/track/([0-9])/clip/([0-9])/name" : self.set_clip_name,
+            "/track/([0-9])/clip/([0-9])/hasContent" : self.set_clip_has_content
+        }
+
     def parse_rgb(self, rgbstr):
         return [float(x) for x in re.match("RGB\(([\.0-9]+),([\.0-9]+),([\.0-9]+)\)", rgbstr).groups()]
 
+
     @liblo.make_method(None, None)
-    def fallback(self, path, args):
+    def handle(self, path, args):
         if DEBUG:
-            print "received unknown message '%s'" % path
+            print "received '%s'" % path
             print args
-        chunks = path.split("/")
-        if len(chunks) == 4:
-            if chunks[1] == 'track' and chunks[3] == 'color':
-                track = int(chunks[2])
-                for clip in range(1,8+1):
-                    color = self.parse_rgb(args[0])
-                    self.app.gui.leds[track][clip].color = color
-                    self.app.gui.leds[track][clip].queue_draw()
+        for pattern, action in self.osc_routes.items():
+            match = re.match(pattern, path)
+            if match:
+                path_args = list(match.groups())
+                path_args.append(args)
+                action(*path_args)
+                break
+
+    def set_playing(self, args):
+        pass
+    
+    def set_track_color(self, track, args):
+        track = int(track)
+        for clip in range(1,8+1):
+            color = self.parse_rgb(args[0])
+            self.app.gui.leds[track][clip].color = color
+            self.app.gui.leds[track][clip].queue_draw()
+
+    def set_clip_queued(self, track, clip, args):
+        track = int(track)
+        clip = int(clip)
+        self.app.gui.leds[track][clip].is_queued = bool(args[0])
+        self.app.gui.leds[track][clip].queue_draw()
+
+    def set_clip_playing(self, track, clip, args):
+        track = int(track)
+        clip = int(clip)
+        self.app.gui.leds[track][clip].is_playing = bool(args[0])
+        self.app.gui.leds[track][clip].queue_draw()
+
+    def set_clip_name(self, track, clip, args):
+        track = int(track)
+        clip = int(clip)
+        self.app.gui.leds[track][clip].label_content = args[0]
+        self.app.gui.leds[track][clip].queue_draw()
+
+    def set_clip_has_content(self, track, clip, args):
+        track = int(track)
+        clip = int(clip)
+        self.app.gui.leds[track][clip].has_content = bool(args[0])
+        self.app.gui.leds[track][clip].queue_draw()
 
 class App(object):
     def __init__(self):
@@ -43,7 +97,7 @@ class App(object):
     def run(self):
         try:
             server = OSCServer(self)
-        except ServerError, err:
+        except liblo.ServerError, err:
             print str(err)
             sys.exit()
 
@@ -60,42 +114,35 @@ class App(object):
                 ev.val = val
                 ev.send()
 
-class OSCButton(Gtk.Button):
-    def __init__(self, label, osc_target, msg):
-        Gtk.Button.__init__(self, label)
-        self.osc = osc_target
-        self.msg = msg
-        self.connect("touch-event", self.pressed)
-        #color = Gdk.color_parse('#234fdb')
-        #self.modify_bg(Gtk.StateType.PRELIGHT, color)
-        #self.set_double_buffered()
-
-    def pressed(self, tgt, ev):
-        if ev.touch.type == Gdk.EventType.TOUCH_BEGIN:
-            liblo.send(self.osc, self.msg)
-
-class ColorOSCButton(Gtk.Widget):
-    __gtype_name__ = 'ColorOSCButton'
-
-    def __init__(self, label, osc_target, msg):
+class OSCButton(Gtk.Widget):
+    __gtype_name__ = 'OSCButton'
+    def __init__(self, osc_target, msg):
         Gtk.Widget.__init__(self)
         self.osc = osc_target
         self.msg = msg
-        self.connect("touch-event", self.pressed)
+        self.connect("touch-event", self.touched)
+        self.connect("button-press-event", self.clicked)
         self.color = (0.95, 0.95, 0.95)
-        self.set_size_request(40, 40)
+        self.set_size_request(80, 60)
 
-    def pressed(self, tgt, ev):
+    def touched(self, tgt, ev):
+        # a sort of debounce, cos touch fires loads of events
         if ev.touch.type == Gdk.EventType.TOUCH_BEGIN:
             liblo.send(self.osc, self.msg)
 
+    def clicked(self, tgt, ev):
+        liblo.send(self.osc, self.msg)
+
     def do_draw(self, cr):
-        # paint background
-        cr.set_source_rgb(*list(self.color))
-        #cr.paint()
+        color = (0.95, 0.95, 0.95)
+        cr.set_source_rgb(*color)
+
         allocation = self.get_allocation()
         cr.rectangle(0, 0, allocation.width, allocation.height)
         cr.fill()
+        cr.set_source_rgb(0.9, 0.9, 0.9)
+        cr.rectangle(0, 0, allocation.width, allocation.height)
+        cr.stroke()
 
     def do_realize(self):
         allocation = self.get_allocation()
@@ -106,7 +153,7 @@ class ColorOSCButton(Gtk.Widget):
         attr.width = allocation.width
         attr.height = allocation.height
         attr.visual = self.get_visual()
-        attr.event_mask = self.get_events() | Gdk.EventMask.EXPOSURE_MASK | Gdk.EventMask.TOUCH_MASK
+        attr.event_mask = self.get_events() | Gdk.EventMask.EXPOSURE_MASK | Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.TOUCH_MASK
         WAT = Gdk.WindowAttributesType
         mask = WAT.X | WAT.Y | WAT.VISUAL
 
@@ -117,6 +164,61 @@ class ColorOSCButton(Gtk.Widget):
         self.set_realized(True)
         window.set_background_pattern(None)
 
+class ClipButton(OSCButton):
+    __gtype_name__ = 'ClipButton'
+
+    def __init__(self, track, clip, osc_target, msg):
+        OSCButton.__init__(self, osc_target, msg)
+        self.color = (0.95, 0.95, 0.95)
+        self.has_content = False
+        self.is_playing = False
+        self.is_queued = False
+        self.flash_state = True
+
+        self.timeout_id = GObject.timeout_add(beat, self.on_timeout)
+
+        self.label_index = u"%i:%i" % (track, clip)
+        self.label_content = ""
+
+    def on_timeout(self):
+        if self.flash_state:
+            self.flash_state = False
+        else:
+            self.flash_state = True
+        self.queue_draw()
+        # timeouts must return True or will not trigger again
+        return True
+
+    def do_draw(self, cr):
+        # paint background
+        color = lighten_rgb(self.color, 1.4)
+        if self.has_content:
+            if self.is_playing:
+                if self.flash_state:
+                    color = self.color
+            elif self.is_queued:
+                color = lighten_rgb(self.color, 1.2)
+        else:
+            color = (0.95, 0.95, 0.95)
+
+        cr.set_source_rgb(*color)
+
+        allocation = self.get_allocation()
+        cr.rectangle(0, 0, allocation.width, allocation.height)
+        cr.fill()
+        cr.set_source_rgb(0.9, 0.9, 0.9)
+        cr.rectangle(0, 0, allocation.width, allocation.height)
+        cr.stroke()
+
+        cr.set_source_rgb(0.3, 0.3, 0.3)
+        cr.select_font_face("Monaco", cairo.FONT_SLANT_NORMAL, 
+            cairo.FONT_WEIGHT_NORMAL)
+        cr.set_font_size(11)
+        cr.move_to(4,15)
+        cr.show_text(self.label_index)
+        cr.move_to(4,30)
+        cr.show_text(self.label_content)
+        #self.add(Gtk.Label(self.label_index))
 
 class Gui(Gtk.Window):
     def __init__(self, app):
@@ -125,25 +227,37 @@ class Gui(Gtk.Window):
 
         #gobject.threads_init()
 
-        self.table = Gtk.Table(8, 8, True)
+        self.table = Gtk.Table(9, 10, True)
         self.add(self.table)
         self.leds = [[False for x in range(8+1)] for x in range(8+1)] 
 
+        for header in range(1, 8+1):
+            self.table.attach(
+                Gtk.Label('Track %i' % header),
+                header,header+1,
+                0,1,
+                Gtk.AttachOptions.EXPAND | Gtk.AttachOptions.FILL,
+                Gtk.AttachOptions.EXPAND | Gtk.AttachOptions.FILL,
+                2,
+                2
+            )
+
         for track in range(1,8+1):
             for clip in range(1,8+1):
-                self.leds[track][clip] = ColorOSCButton(
-                    "%i:%i" % (track, clip),
+                self.leds[track][clip] = ClipButton(
+                    track,
+                    clip,
                     self.app.osc_target,
-                    liblo.Message("/track/%i/clip/%i/launch" % (track, clip))
+                    liblo.Message("/track/%i/clip/%i/launch" % (track, clip)),
                 )
                 self.table.attach(
                     self.leds[track][clip],
-                    track-1,track,
-                    clip-1,clip,
-                    Gtk.AttachOptions.EXPAND,
-                    Gtk.AttachOptions.EXPAND,
-                    10,
-                    10
+                    track,track+1,
+                    clip,clip+1,
+                    Gtk.AttachOptions.EXPAND | Gtk.AttachOptions.FILL,
+                    Gtk.AttachOptions.EXPAND | Gtk.AttachOptions.FILL,
+                    2,
+                    2
                 )
 
         self.show_all()
