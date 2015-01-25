@@ -3,7 +3,9 @@ OSC Launchpad
 
 A matrix of buttons useful for triggering events in OSC aware apps.
 
-Designed to work on touch screen systems.
+Designed to work on touch screen systems (like one of those fancy new laptops).
+
+![Screenshot](http://mrmonkington.github.io/osc-launchpad/screenshot_1.jpg)
 
 Written in Python + GTK3 + Liblo.
 
